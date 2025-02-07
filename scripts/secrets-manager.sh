@@ -5,10 +5,12 @@
 # description:  used in logging functions
 # =========================================================
 
+YB='\033[6;33m'
 WHITE='\033[0;97m'
 WHITEIT='\033[3;97m'
 CYAN='\033[0;36m'
 YELLOW='\033[0;33m'
+Y2='\033[0;93m'
 RED='\033[0;31m'
 NC='\033[0m' # No Color
 
@@ -18,6 +20,7 @@ NC='\033[0m' # No Color
 # description:  keep track of execution mode like verbose
 # =========================================================
 DEBUG_MODE=0
+QUIET_MODE=1
 TEST_MODE=0
 VERBOSE_MODE=0
 FILE_TO_ENCRYPT=""
@@ -26,6 +29,7 @@ FILE_TO_DECRYPT=""
 DECRYPT_OPT=0
 EXTRACT_OPT=0
 REGISTER_OPT=0
+INIT_MODE=0
 
 # =========================================================
 # variables:    global paths 
@@ -93,26 +97,33 @@ AGE_LOGFILE="/tmp/age-gl.log"
 #              
 # =========================================================
 log_debug() {
-	if [[ $DEBUG_MODE -eq 1 ]]; then
-		echo -e "${YELLOW}🆃🅴🆂🆃${NC}${WHITE} $1${NC}" >> "/dev/stderr"
-        #echo -e "🧪${WHITE} $1${NC}" >> "/dev/stderr"
+	if [[ $QUIET_MODE -eq 0 && $DEBUG_MODE -eq 1 ]]; then
+        echo -e "🚧 ${YB} ⒹⒺⒷⓊⒼ ${NC} ${Y2}$1${NC}" >> "/dev/stderr"
     fi
 }
 log_ok() {
-    echo -e "✅ ${WHITE}$1${NC}"
-    echo -e "✅ [$(date +%H:%M:%S)] $1" >> "$LOG_FILE"
+	if [[ $QUIET_MODE -eq 0 ]]; then
+	    echo -e "✅ ${WHITE}$1${NC}"
+	    echo -e "✅ [$(date +%H:%M:%S)] $1" >> "$LOG_FILE"
+	fi
 }
 log_info() {
-    echo -e "${CYAN}🛈${NC} ${WHITE}$1${NC}"
-    echo -e "${CYAN}🛈${NC} ${WHITE}[$(date +%H:%M:%S)] $1${NC}" >> "$LOG_FILE"
+	if [[ $QUIET_MODE -eq 0 ]]; then
+	    echo -e "${RED}🛈 ${NC} ${WHITE}$1${NC}"
+	    echo -e "${RED}🛈 ${NC} ${WHITE} [$(date +%H:%M:%S)] $1${NC}" >> "$LOG_FILE"
+	fi
 }
 log_warning() {
-    echo -e "⚠ [$(date +%H:%M:%S)] $1" >> "$LOG_FILE"
-    echo -e "⚠ ${YELLOW}$1${NC}"
+	if [[ $QUIET_MODE -eq 0 ]]; then
+	    echo -e "⚠ [$(date +%H:%M:%S)] $1" >> "$LOG_FILE"
+	    echo -e "⚠ ${YELLOW} $1${NC}"
+	fi
 }
 log_error() {
-    echo "❌ [$(date +%H:%M:%S)] $1" >> "$LOG_FILE"
-    echo -e "❌ ${YELLOW}$1${NC}"
+	if [[ $QUIET_MODE -eq 0 ]]; then
+	    echo "❌ [$(date +%H:%M:%S)] $1" >> "$LOG_FILE"
+	    echo -e "❌ ${YELLOW} $1${NC}"
+	fi
 }
 
 # =========================================================
@@ -124,6 +135,7 @@ usage() {
     echo "Usage: $0 [options]"  
     echo "  -v, --verbose           Verbose mode"
     echo "  -t, --test              Test mode"
+    echo "  -i, --init              Initialize"
     echo "  -t, --encrypt <file>    Encrypt file"
     echo "  -t, --decrypt <file>    Decrypt file"
     echo "  -r, --read              Read credentials"
@@ -141,6 +153,13 @@ install_age() {
 	if [[ -f "$AGE_PACKAGE" ]]; then
 	   log_info "package already on disk \"$AGE_PACKAGE\""
 	   return 0
+	fi
+
+
+	# Ensure the script is run as root
+	if [[ "$EUID" -ne 0 ]]; then
+		log_error "Please run as root"
+		exit 1
 	fi
 
 	log_info "[install_age] Installing age ($AGE_PLATFORM) version ${AGE_VERSION}"
@@ -328,7 +347,6 @@ encrypt_aes_key(){
 
 	if [[ -f "$AES_KEY_CODED" ]]; then
 		log_warning "coded aes key is present, remove"
-		rm -rf "$AES_KEY_CODED"
 	fi 
 	
 	age -r $(cat "$PUBLIC_KEY") -o "$AES_KEY_CODED" "$AES_KEY_CLEAR"
@@ -355,8 +373,8 @@ decrypt_aes_key(){
 	fi 
 
 	if [[ -f "$AES_KEY_CLEAR" ]]; then
-		log_warning "decrypted aes key is present, remove"
-		mv "$AES_KEY_CLEAR" "$KEYS_BACKUP_PATH/clear.aes"
+		log_warning "decrypted aes key is present"
+		return 0
 	fi 
 	
 	log_info "Decrypt the AES key using the private key"
@@ -368,31 +386,44 @@ decrypt_aes_key(){
 		return 1
 	fi 
 
-	log_warning "cleaning up coded aes key"
-	rm -rf "$AES_KEY_CODED"
-
 	return 0
 }
 
 register_credentials() {
-    local app_file="$CREDENTIALS_PATH/$APPNAME.txt"
-    local encrypted_file="$app_file.aes"
+    local app_file="${CREDENTIALS_PATH}/${APPNAME}.txt"
+    local encrypted_file="${app_file}.aes"
 
     log_info "Registering credentials for $APPNAME..."
 
     # Prompt for username and password
     read -p "Enter username: " username
-    read -s -p "Enter password: " password
+    # Confirm password entry
+    while true; do
+        read -s -p "Enter password: " password1
+        echo ""
+        read -s -p "Confirm password: " password2
+        echo ""
+
+        if [[ "$password1" == "$password2" ]]; then
+            password="$password1"
+            break
+        else
+        	echo -e "❌ ${YELLOW} Passwords do not match! Please try again.${NC}"
+        fi
+    done
+
     echo ""
     
     # Store credentials securely in plaintext file (temporarily)
-    echo "username: $username" > "$app_file"
-    echo "password: $password" >> "$app_file"
+    echo "$username" > "$app_file"
+    echo "$password" >> "$app_file"
 
     log_info "Encrypting credentials with AES using key file: $AES_KEY_CLEAR"
-
+	if [[ -f "$encrypted_file" ]]; then
+		rm -rf "$encrypted_file"
+	fi 
     # Encrypt credentials using AES with the key file
-    aescrypt -e -k "$AES_KEY_CLEAR" -o "$encrypted_file" "$app_file"
+    aescrypt -e -k "$AES_KEY_CLEAR" -o "$encrypted_file" "$app_file" > /dev/null 2>&1
 
     if [[ $? -ne 0 ]]; then
         log_error "Failed to encrypt credentials."
@@ -413,10 +444,71 @@ register_credentials() {
 }
 
 
+extract_credentials() {
+    local encrypted_file="${CREDENTIALS_PATH}/${APPNAME}.txt.aes"
+    local decrypted_file="${CREDENTIALS_PATH}/${APPNAME}.txt"
+
+    log_info "Extracting credentials for $APPNAME..."
+
+    if [[ ! -f "$encrypted_file" ]]; then
+        log_error "Encrypted credentials file not found: $encrypted_file"
+        return 1
+    fi
+
+    # Decrypt the AES key first
+    log_info "Decrypting AES key..."
+    decrypt_aes_key
+    if [[ $? -ne 0 ]]; then
+        log_error "Failed to decrypt AES key."
+        return 1
+    fi
+
+    log_info "Decrypting credentials file using AES key file: $AES_KEY_CLEAR"
+
+    # Decrypt credentials using AES
+    aescrypt -d -k "$AES_KEY_CLEAR" -o "$decrypted_file" "$encrypted_file" > /dev/null 2>&1
+
+    if [[ $? -ne 0 ]]; then
+        log_error "Failed to decrypt credentials."
+        return 1
+    else
+        log_ok "Credentials decrypted: $decrypted_file"
+    fi
+
+    # Display the credentials securely
+    log_info "Displaying credentials:"
+    
+    my_username=$(cat "$decrypted_file" | head -n 1)
+
+	my_password=$(cat "$decrypted_file" | tail -n 1)
+
+	echo -e "${my_username}\n${my_password}"
+
+    # Securely delete decrypted credentials file
+    log_warning "Cleaning up decrypted credentials..."
+    rm -f "$decrypted_file"
+
+    return 0
+}
+
+
+
 
 # Parse script arguments
 while [[ $# -gt 0 ]]; do
     case $1 in
+        -q|--quiet)
+            QUIET_MODE=1
+            shift
+            ;;  
+        -i|--init)
+            INIT_MODE=1
+            shift
+            ;;              
+        -d|--debug)
+            DEBUG_MODE=1
+            shift
+            ;;                	
         -t|--test)
             TEST_MODE=1
             shift
@@ -440,7 +532,8 @@ while [[ $# -gt 0 ]]; do
             fi
             shift 2
             ;;
-        -d|--decrypt)
+        #-d|--decrypt)
+        -z|--zdecrypt)
             DECRYPT_OPT=1
             if [[ $# -lt 2  ]]; then
                 log_error "-d/--decrypt option requires a file name"
@@ -472,7 +565,6 @@ while [[ $# -gt 0 ]]; do
                 exit 1
             fi
             APPNAME="$2"
-        
             shift 2
             ;;   
         -h|--help)
@@ -485,40 +577,31 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+if [[ $INIT_MODE -eq 1 ]]; then
 
-# Ensure the script is run as root
-if [[ "$EUID" -ne 0 ]]; then
-	log_error "Please run as root"
-	exit 1
-fi
+	if ! validate_age_app; then
+		if install_age; then
+			log_info "installed age!"
+		else 
+			log_error "problem while installing age"
+			exit 1
+		fi
+	fi
 
-
-if ! validate_age_app; then
-	if install_age; then
-		log_info "installed age!"
-	else 
-		log_error "problem while installing age"
+	if ! validate_apps; then
+		log_error "problem: missing dependency"
 		exit 1
 	fi
-fi
-
-if ! validate_apps; then
-	log_error "problem: missing dependency"
-	exit 1
-fi
 
 
-log_info "test validate_ed25519_key_pair"
+	log_info "test validate_ed25519_key_pair"
 
-if ! validate_ed25519_key_pair; then
-	log_warning "failed:  validate_ed25519_key_pair. Iintialize crypto"
-	init_crypto
-fi
-
-if [[ $TEST_MODE -eq 1 ]]; then
+	if ! validate_ed25519_key_pair; then
+		log_warning "failed:  validate_ed25519_key_pair. Iintialize crypto"
+		init_crypto
+	fi
 
 	log_info "test encrypt_key"
-	
 	if ! encrypt_aes_key; then
 		log_error "failed: encrypt_aes_key"
 		init_crypto
@@ -529,4 +612,25 @@ if [[ $TEST_MODE -eq 1 ]]; then
 		log_error "failed: decrypt_aes_key"
 		init_crypto
 	fi
+fi
+
+
+if [[ $TEST_MODE -eq 1 ]]; then
+	log_info "test encrypt_key"
+	if ! encrypt_aes_key; then
+		log_error "failed: encrypt_aes_key"
+		init_crypto
+	fi
+
+	log_info "test decrypt_key"
+	if ! decrypt_aes_key; then
+		log_error "failed: decrypt_aes_key"
+		init_crypto
+	fi
+elif [[ $REGISTER_OPT -eq 1 && ! -z $APPNAME ]]; then
+	log_info "register_credentials \"$APPNAME\""
+    register_credentials "$APPNAME"
+elif [[ $EXTRACT_OPT -eq 1 && ! -z $APPNAME ]]; then
+	log_info "extract_credentials \"$APPNAME\""
+    extract_credentials "$APPNAME"
 fi
