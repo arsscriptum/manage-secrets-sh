@@ -17,10 +17,15 @@ NC='\033[0m' # No Color
 # variables:    flages for script modes
 # description:  keep track of execution mode like verbose
 # =========================================================
-
+DEBUG_MODE=0
 TEST_MODE=0
 VERBOSE_MODE=0
-
+FILE_TO_ENCRYPT=""
+ENCRYPT_OPT=0
+FILE_TO_DECRYPT=""
+DECRYPT_OPT=0
+EXTRACT_OPT=0
+REGISTER_OPT=0
 
 # =========================================================
 # variables:    global paths 
@@ -87,7 +92,12 @@ AGE_LOGFILE="/tmp/age-gl.log"
 # description:  log messages to fils and console
 #              
 # =========================================================
-
+log_debug() {
+	if [[ $DEBUG_MODE -eq 1 ]]; then
+		echo -e "${YELLOW}🆃🅴🆂🆃${NC}${WHITE} $1${NC}" >> "/dev/stderr"
+        #echo -e "🧪${WHITE} $1${NC}" >> "/dev/stderr"
+    fi
+}
 log_ok() {
     echo -e "✅ ${WHITE}$1${NC}"
     echo -e "✅ [$(date +%H:%M:%S)] $1" >> "$LOG_FILE"
@@ -96,7 +106,7 @@ log_info() {
     echo -e "${CYAN}🛈${NC} ${WHITE}$1${NC}"
     echo -e "${CYAN}🛈${NC} ${WHITE}[$(date +%H:%M:%S)] $1${NC}" >> "$LOG_FILE"
 }
-log_warn() {
+log_warning() {
     echo -e "⚠ [$(date +%H:%M:%S)] $1" >> "$LOG_FILE"
     echo -e "⚠ ${YELLOW}$1${NC}"
 }
@@ -105,12 +115,22 @@ log_error() {
     echo -e "❌ ${YELLOW}$1${NC}"
 }
 
-# Ensure the script is run as root
-if [ "$EUID" -ne 0 ]; then
-    log_error "Please run as root"
-	exit 1
-fi
+# =========================================================
+# function:     usage
+# description:  show the possible options for  this script
+# =========================================================
 
+usage() {
+    echo "Usage: $0 [options]"  
+    echo "  -v, --verbose           Verbose mode"
+    echo "  -t, --test              Test mode"
+    echo "  -t, --encrypt <file>    Encrypt file"
+    echo "  -t, --decrypt <file>    Decrypt file"
+    echo "  -r, --read              Read credentials"
+    echo "  -w, --write             Write credentials"
+    echo "  -h, --help              Show this help message"
+    exit 0
+}
 
 # =========================================================
 # function:     install_age
@@ -233,7 +253,57 @@ validate_apps() {
 # description:  used in logging functions
 # =========================================================
 
+
+
+
 init_crypto(){
+	
+	if [[ -f "$PRIVATE_KEY" ]]; then
+		log_error "PRIVATE KEY $PRIVATE_KEY ALREADY EXISTS! CAREFUL IF YOU OVERWRITE!!!"
+		return 1
+	fi
+
+	log_info "Generate Ed25519 Key Pair"
+	rm -rf "$PRIVATE_KEY"
+
+	PUBLIC_KEY_STRING=$(age-keygen -o "$PRIVATE_KEY" 2>&1 | awk '{print $NF}')
+	if [[ $? -ne 0 ]]; then
+		log_error "failed on key generation."
+		return 1
+	else 
+		log_info "writing public key file $PUBLIC_KEY"
+		echo "$PUBLIC_KEY_STRING" > "$PUBLIC_KEY"
+	fi
+
+	log_info "Generate a random symmetric key (AES)."
+	aescrypt -g -k "$AES_KEY_CLEAR"
+	if [[ $? -ne 0 ]]; then
+		log_error "failed on key generation."
+		return 1
+	else 
+		log_ok "key generated: $AES_KEY_CLEAR"
+	fi	
+	
+	log_debug "age -R $(cat "$PUBLIC_KEY") -o \"$AES_KEY_CODED\" \"$AES_KEY_CLEAR\""
+	
+	age -r $(cat "$PUBLIC_KEY") -o "$AES_KEY_CODED" "$AES_KEY_CLEAR"
+	if [[ $? -ne 0 ]]; then
+		log_error "failed on aes key encryption"
+		if [[ -f "$AES_KEY_CODED" ]]; then
+			log_error "missing file $AES_KEY_CODED"
+			return 1
+		fi
+		return 1
+	else 
+		log_ok "coded key generated: $AES_KEY_CODED"
+		rm -rf "$AES_KEY_CLEAR"
+	fi		
+	
+
+	return 0
+}
+
+init_crypto2(){
 	
 	log_info "Generate Ed25519 Key Pair"
 	openssl genpkey -algorithm ed25519 -out "$PRIVATE_KEY"
@@ -250,7 +320,7 @@ init_crypto(){
 	# openssl pkeyutl -encrypt -pubin -inkey "$PUBLIC_KEY" -in "$AES_KEY_CLEAR" -out "$AES_KEY_CODED"
 }
 
-encrypt_key(){
+encrypt_aes_key(){
 	if [[ ! -f "$AES_KEY_CLEAR" ]]; then
 		log_error "missing aes key [$AES_KEY_CLEAR]"
 		return 1
@@ -261,7 +331,7 @@ encrypt_key(){
 		rm -rf "$AES_KEY_CODED"
 	fi 
 	
-	age -R "$PRIVATE_KEY" -o "$AES_KEY_CODED" "$AES_KEY_CLEAR"
+	age -r $(cat "$PUBLIC_KEY") -o "$AES_KEY_CODED" "$AES_KEY_CLEAR"
 	if [[ $? -eq 0 ]]; then
 		log_ok "aeskey encrypted $AES_KEY_CODED"
 	else
@@ -278,7 +348,7 @@ encrypt_key(){
 	return 0
 }
 
-decrypt_key(){
+decrypt_aes_key(){
 	if [[ ! -f "$AES_KEY_CODED" ]]; then
 		log_error "missing coded aes key [$AES_KEY_CODED]"
 		return 1
@@ -292,9 +362,9 @@ decrypt_key(){
 	log_info "Decrypt the AES key using the private key"
 	age -d -i "$PRIVATE_KEY" -o "$AES_KEY_CLEAR" "$AES_KEY_CODED"
 	if [[ $? -eq 0 ]]; then
-		log_ok "aeskey encrypted $AES_KEY_CODED"
+		log_ok "aeskey decrypted $AES_KEY_CLEAR"
 	else
-		log_error "error on aeskey cipher [$AES_KEY_CLEAR]"
+		log_error "error on aeskey decipher [$AES_KEY_CLEAR]"
 		return 1
 	fi 
 
@@ -303,6 +373,74 @@ decrypt_key(){
 
 	return 0
 }
+
+
+
+# Parse script arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -t|--test)
+            TEST_MODE=1
+            shift
+            ;;
+        -v|--verbose)
+            VERBOSE_MODE=1
+            shift
+            ;;
+        -e|--encrypt)
+            ENCRYPT_OPT=1
+            if [[ $# -lt 2  ]]; then
+                log_error "-e/--encrypt option requires a file name"
+                exit 1
+            fi
+            FILE_TO_ENCRYPT="$2"
+
+            # Validate format: owner/name:tag
+            if [[ ! -f "$FILE_TO_ENCRYPT" ]]; then
+                log_error "Cannot find file to cipher: $FILE_TO_ENCRYPT"
+                exit 1
+            fi
+            shift 2
+            ;;
+        -d|--decrypt)
+            DECRYPT_OPT=1
+            if [[ $# -lt 2  ]]; then
+                log_error "-d/--decrypt option requires a file name"
+                exit 1
+            fi
+            FILE_TO_DECRYPT="$2"
+
+            # Validate format: owner/name:tag
+            if [[ ! -f "$FILE_TO_DECRYPT" ]]; then
+                log_error "Cannot find file to decipher: $FILE_TO_DECRYPT"
+                exit 1
+            fi
+            shift 2
+            ;;            
+        -r|--record)
+            REGISTER_OPT=1
+            shift 1
+            ;;    
+        -x|--extract)
+            EXTRACT_OPT=1
+            shift 1
+            ;;  
+        -h|--help)
+            usage
+            ;;
+        *)
+            echo "[error] Invalid option: $1"
+            usage
+            ;;
+    esac
+done
+
+
+# Ensure the script is run as root
+if [[ "$EUID" -ne 0 ]]; then
+	log_error "Please run as root"
+	exit 1
+fi
 
 
 if ! validate_age_app; then
@@ -321,15 +459,24 @@ fi
 
 
 log_info "test validate_ed25519_key_pair"
+
 if ! validate_ed25519_key_pair; then
-	log_warning "failed:  init_crypto"
+	log_warning "failed:  validate_ed25519_key_pair. Iintialize crypto"
 	init_crypto
 fi
 
+if [[ $TEST_MODE -eq 1 ]]; then
 
-log_info "test encrypt_key"
-encrypt_key
-
-log_info "test decrypt_key"
-decrypt_key
+	log_info "test encrypt_key"
 	
+	if ! encrypt_aes_key; then
+		log_error "failed: encrypt_aes_key"
+		init_crypto
+	fi
+
+	log_info "test decrypt_key"
+	if ! decrypt_aes_key; then
+		log_error "failed: decrypt_aes_key"
+		init_crypto
+	fi
+fi
