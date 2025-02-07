@@ -88,4 +88,4 @@ The script maintains logs at:
 ```
 
 
-<center><img src="doc/img/secrets_2.jpg" alt="banner3"></center>
+<center><img src="doc/img/secrets_2.png" alt="banner3"></center>
