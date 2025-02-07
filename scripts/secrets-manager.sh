@@ -374,6 +374,44 @@ decrypt_aes_key(){
 	return 0
 }
 
+register_credentials() {
+    local app_file="$CREDENTIALS_PATH/$APPNAME.txt"
+    local encrypted_file="$app_file.aes"
+
+    log_info "Registering credentials for $APPNAME..."
+
+    # Prompt for username and password
+    read -p "Enter username: " username
+    read -s -p "Enter password: " password
+    echo ""
+    
+    # Store credentials securely in plaintext file (temporarily)
+    echo "username: $username" > "$app_file"
+    echo "password: $password" >> "$app_file"
+
+    log_info "Encrypting credentials with AES using key file: $AES_KEY_CLEAR"
+
+    # Encrypt credentials using AES with the key file
+    aescrypt -e -k "$AES_KEY_CLEAR" -o "$encrypted_file" "$app_file"
+
+    if [[ $? -ne 0 ]]; then
+        log_error "Failed to encrypt credentials."
+        return 1
+    else
+        log_ok "Credentials encrypted: $encrypted_file"
+    fi
+
+    # Remove plaintext credentials file
+    rm -f "$app_file"
+    log_warning "Deleted plaintext credentials: $app_file"
+
+    # Encrypt AES key for security
+    log_info "Encrypting AES key..."
+    encrypt_aes_key
+
+    return 0
+}
+
 
 
 # Parse script arguments
@@ -419,12 +457,24 @@ while [[ $# -gt 0 ]]; do
             ;;            
         -r|--record)
             REGISTER_OPT=1
-            shift 1
-            ;;    
+            if [[ $# -lt 2  ]]; then
+                log_error "-r/--register option requires a app name"
+                exit 1
+            fi
+            APPNAME="$2"
+
+            shift 2
+            ;;   
         -x|--extract)
             EXTRACT_OPT=1
-            shift 1
-            ;;  
+            if [[ $# -lt 2  ]]; then
+                log_error "-r/--register option requires a app name"
+                exit 1
+            fi
+            APPNAME="$2"
+        
+            shift 2
+            ;;   
         -h|--help)
             usage
             ;;
